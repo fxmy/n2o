@@ -7,6 +7,7 @@
 -define(ROOT, wf:config(n2o,upload,code:priv_dir(n2o))).
 -define(next, 256*1024). % 256K chunks for best 22MB/s speed
 -define(stop, 0).
+-define(buffer_size, 4*?next).
 
 % N2O Protocols
 
@@ -46,7 +47,7 @@ proc(init,Async) -> {ok, Async};
 
 proc(#ftp{sid=Sid, data=Msg, status= <<"send">>, block=B,filename=Filename}=FTP,
      #handler{state=#ftp{data=State,offset=Offset}}=Async) when erlang:byte_size(Msg) < B ->
-    case file:write_file(filename:join([?ROOT,wf:to_list(Sid),Filename]), <<Msg/binary>>, [append,raw]) of
+    case file:write_file(filename:join([?ROOT,wf:to_list(Sid),Filename]), <<State/binary,Msg/binary>>, [append,raw]) of
             ok -> {stop, normal, FTP#ftp{data= <<"">>,block=?stop}, Async#handler{state=FTP#ftp{block=?stop}}};
    {error, Rw} -> {reply, {error, Rw}, Async} end;
 
@@ -54,6 +55,12 @@ proc(#ftp{sid=Sid,data=Msg, block=Block, filename=Filename}=FTP,
      #handler{state=#ftp{data=State, offset=Offset}}=Async) ->
     F2 = FTP#ftp{status= <<"send">>, offset=Offset + Block },
     wf:info(?MODULE,"send ~p", [F2#ftp{data= <<"">>}]),
-    case file:write_file(filename:join([?ROOT,wf:to_list(Sid),Filename]), <<Msg/binary>>, [append,raw]) of
-            ok -> {reply, F2#ftp{data= <<"">>}, Async#handler{state=F2}};
-   {error, Rw} -> {reply, {error, Rw}, Async} end.
+	case erlang:byte_size(State) >= ?buffer_size of
+		false -> % buffer not full
+			{reply, F2#ftp{data= <<"">>}, Async#handler{state=F2#ftp{data= <<State/binary,Msg/binary>>}}};
+		true -> % buffer full
+			case file:write_file(filename:join([?ROOT,wf:to_list(Sid),Filename]), <<State/binary>>, [append,raw]) of
+				ok -> {reply, F2#ftp{data= <<"">>}, Async#handler{state=F2#ftp{data= <<Msg/binary>>}}};
+				{error, Rw} -> {reply, {error, Rw}, Async}
+			end
+	end.
